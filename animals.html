@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>구조동물 조회</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#222; --muted:#777; --accent:#e8743b; --line:#e3e5e8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181b; --card:#212429; --text:#eee; --muted:#9aa0a6; --line:#33373d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,"Malgun Gothic",sans-serif; }
+  header { padding:24px 16px 8px; text-align:center; }
+  h1 { margin:0; font-size:1.6rem; }
+  header p { margin:6px 0 0; color:var(--muted); font-size:.9rem; }
+  main { max-width:1100px; margin:0 auto; padding:0 16px 40px; }
+  form { display:flex; flex-wrap:wrap; gap:10px; align-items:end; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin:16px 0; }
+  label { display:flex; flex-direction:column; font-size:.8rem; color:var(--muted); gap:4px; }
+  select, input, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  button { background:var(--accent); color:#fff; border:0; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { margin:8px 0; color:var(--muted); font-size:.9rem; min-height:1.2em; }
+  #status.error { color:#d33; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; }
+  .card:hover { box-shadow:0 4px 14px rgba(0,0,0,.15); }
+  .card img { width:100%; aspect-ratio:4/3; object-fit:cover; background:var(--line); display:block; }
+  .info { padding:10px 12px; font-size:.85rem; display:grid; gap:3px; }
+  .info b { font-size:.95rem; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:.72rem; background:var(--accent); color:#fff; margin-right:4px; }
+  .tag.gray { background:var(--muted); }
+  .muted { color:var(--muted); }
+  #pager { display:flex; justify-content:center; align-items:center; gap:6px; margin-top:20px; flex-wrap:wrap; }
+  #pager button { background:var(--card); color:var(--text); border:1px solid var(--line); font-weight:400; min-width:38px; }
+  #pager button.cur { background:var(--accent); color:#fff; border-color:var(--accent); }
+  dialog { border:0; border-radius:14px; padding:0; max-width:560px; width:calc(100% - 32px); background:var(--card); color:var(--text); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  .dlg-body { padding:16px; display:grid; gap:6px; font-size:.9rem; }
+  .dlg-imgs { display:flex; gap:6px; overflow-x:auto; }
+  .dlg-imgs img { height:260px; border-radius:8px; }
+  .dlg-close { position:absolute; right:10px; top:10px; width:34px; height:34px; border-radius:50%; padding:0; }
+  dl { display:grid; grid-template-columns:90px 1fr; gap:4px 8px; margin:0; }
+  dt { color:var(--muted); } dd { margin:0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐾 구조동물 조회</h1>
+  <p>공공데이터포털 · 농림축산식품부 동물보호관리시스템 유기동물 정보</p>
+</header>
+<main>
+  <form id="form">
+    <label>시작일<input type="date" id="bgnde"></label>
+    <label>종료일<input type="date" id="endde"></label>
+    <label>축종
+      <select id="upkind">
+        <option value="">전체</option>
+        <option value="417000">개</option>
+        <option value="422400">고양이</option>
+        <option value="429900">기타</option>
+      </select>
+    </label>
+    <label>상태
+      <select id="state">
+        <option value="">전체</option>
+        <option value="notice">공고중</option>
+        <option value="protect">보호중</option>
+      </select>
+    </label>
+    <label>중성화
+      <select id="neuter">
+        <option value="">전체</option>
+        <option value="Y">예</option>
+        <option value="N">아니오</option>
+        <option value="U">미상</option>
+      </select>
+    </label>
+    <label>한 페이지
+      <select id="rows"><option>12</option><option>24</option><option>48</option></select>
+    </label>
+    <button type="submit" id="submit">조회</button>
+  </form>
+  <div id="status"></div>
+  <div class="grid" id="list"></div>
+  <div id="pager"></div>
+</main>
+
+<dialog id="dlg">
+  <button class="dlg-close" id="dlgClose" aria-label="닫기">✕</button>
+  <div id="dlgContent"></div>
+</dialog>
+
+<script>
+const BASE = 'https://apis.data.go.kr/1543061/abandonmentPublicService_v2/abandonmentPublic_v2';
+const KEY = '여러분들의 인증키'; // 이미 URL 인코딩된 키
+
+const $ = id => document.getElementById(id);
+const SEX = { M:'수컷', F:'암컷', Q:'미상' };
+const NEUTER = { Y:'중성화 O', N:'중성화 X', U:'중성화 미상' };
+let items = [], page = 1, total = 0;
+
+const ymd = d => d.toISOString().slice(0,10);
+const compact = s => s.replaceAll('-', '');
+const fmtDate = s => s && s.length === 8 ? `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6)}` : (s || '-');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// 기본 기간: 최근 30일
+const today = new Date();
+$('endde').value = ymd(today);
+$('bgnde').value = ymd(new Date(today.getTime() - 30*86400000));
+
+function setStatus(msg, isError) {
+  $('status').textContent = msg;
+  $('status').className = isError ? 'error' : '';
+}
+
+async function load(p = 1) {
+  page = p;
+  const rows = $('rows').value;
+  // serviceKey는 이미 인코딩되어 있으므로 URLSearchParams를 쓰지 않고 직접 조립
+  let url = `${BASE}?serviceKey=${KEY}&_type=json&pageNo=${page}&numOfRows=${rows}`;
+  const add = (k, v) => { if (v) url += `&${k}=${encodeURIComponent(v)}`; };
+  add('bgnde', compact($('bgnde').value));
+  add('endde', compact($('endde').value));
+  add('upkind', $('upkind').value);
+  add('state', $('state').value);
+  add('neuter_yn', $('neuter').value);
+
+  $('submit').disabled = true;
+  setStatus('불러오는 중...');
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const header = json.response?.header;
+    if (header && header.resultCode !== '00') throw new Error(`${header.resultMsg} (${header.resultCode})`);
+    const body = json.response.body;
+    total = Number(body.totalCount) || 0;
+    const it = body.items?.item;
+    items = Array.isArray(it) ? it : it ? [it] : [];
+    render();
+    setStatus(total ? `총 ${total.toLocaleString()}건` : '조회 결과가 없습니다.');
+  } catch (e) {
+    items = []; total = 0; render();
+    setStatus('조회 실패: ' + e.message, true);
+  } finally {
+    $('submit').disabled = false;
+  }
+}
+
+function render() {
+  $('list').innerHTML = items.map((a, i) => `
+    <article class="card" data-i="${i}">
+      <img src="${esc(a.popfile1 || a.popfile2 || '')}" alt="${esc(a.kindNm)}" loading="lazy"
+           onerror="this.removeAttribute('src');this.alt='이미지 없음'">
+      <div class="info">
+        <b>${esc(a.kindFullNm || a.kindNm)}</b>
+        <div><span class="tag">${esc(a.processState)}</span><span class="tag gray">${SEX[a.sexCd] || '-'}</span><span class="tag gray">${NEUTER[a.neuterYn] || ''}</span></div>
+        <div class="muted">${esc(a.colorCd)} · ${esc(a.age)} · ${esc(a.weight)}</div>
+        <div class="muted">발견: ${esc(a.happenPlace)}</div>
+        <div class="muted">${esc(a.careNm)}</div>
+      </div>
+    </article>`).join('');
+  renderPager();
+}
+
+function renderPager() {
+  const last = Math.ceil(total / Number($('rows').value));
+  if (last <= 1) { $('pager').innerHTML = ''; return; }
+  const start = Math.max(1, Math.min(page - 2, last - 4));
+  const end = Math.min(last, start + 4);
+  let h = `<button data-p="1" ${page===1?'disabled':''}>«</button><button data-p="${page-1}" ${page===1?'disabled':''}>‹</button>`;
+  for (let i = start; i <= end; i++) h += `<button data-p="${i}" class="${i===page?'cur':''}">${i}</button>`;
+  h += `<button data-p="${page+1}" ${page===last?'disabled':''}>›</button><button data-p="${last}" ${page===last?'disabled':''}>»</button>`;
+  $('pager').innerHTML = h;
+}
+
+function openDetail(a) {
+  const imgs = [a.popfile1, a.popfile2, a.popfile3].filter(Boolean)
+    .map(src => `<img src="${esc(src)}" alt="" onerror="this.remove()">`).join('');
+  const tel = a.careTel ? `<a href="tel:${esc(a.careTel)}">${esc(a.careTel)}</a>` : '-';
+  $('dlgContent').innerHTML = `
+    <div class="dlg-imgs">${imgs}</div>
+    <div class="dlg-body">
+      <h3 style="margin:4px 0">${esc(a.kindFullNm)}</h3>
+      <dl>
+        <dt>상태</dt><dd>${esc(a.processState)}</dd>
+        <dt>성별</dt><dd>${SEX[a.sexCd] || '-'} / ${NEUTER[a.neuterYn] || '-'}</dd>
+        <dt>색상</dt><dd>${esc(a.colorCd)}</dd>
+        <dt>나이/체중</dt><dd>${esc(a.age)} / ${esc(a.weight)}</dd>
+        <dt>특징</dt><dd>${esc(a.specialMark)}</dd>
+        <dt>발견일</dt><dd>${fmtDate(a.happenDt)}</dd>
+        <dt>발견장소</dt><dd>${esc(a.happenPlace)}</dd>
+        <dt>공고번호</dt><dd>${esc(a.noticeNo)}</dd>
+        <dt>공고기간</dt><dd>${fmtDate(a.noticeSdt)} ~ ${fmtDate(a.noticeEdt)}</dd>
+        <dt>보호센터</dt><dd>${esc(a.careNm)}</dd>
+        <dt>연락처</dt><dd>${tel}</dd>
+        <dt>주소</dt><dd>${esc(a.careAddr)}</dd>
+        <dt>관할</dt><dd>${esc(a.orgNm)}</dd>
+      </dl>
+    </div>`;
+  $('dlg').showModal();
+}
+
+$('form').addEventListener('submit', e => { e.preventDefault(); load(1); });
+$('list').addEventListener('click', e => {
+  const card = e.target.closest('.card');
+  if (card) openDetail(items[card.dataset.i]);
+});
+$('pager').addEventListener('click', e => {
+  const b = e.target.closest('button[data-p]');
+  if (b && !b.disabled) { load(Number(b.dataset.p)); scrollTo({ top: 0, behavior: 'smooth' }); }
+});
+$('dlgClose').addEventListener('click', () => $('dlg').close());
+$('dlg').addEventListener('click', e => { if (e.target === $('dlg')) $('dlg').close(); });
+
+load(1);
+</script>
+</body>
+</html>
